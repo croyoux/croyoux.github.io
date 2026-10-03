@@ -16,6 +16,8 @@ const int Scope_Size = (Factor + (Factor % 3)) / 3;
 #define INFO_DISPLAY_TIME  0.65f
 #define BUFFER_SIZE        4096
 
+#define DCEIL(DED, DOR) (DED / DOR + (DED % DOR != 0))
+
 enum DRAW_MODE {
     DRAW_MODE_WAVE = 0,
     DRAW_MODE_FFT = 1,
@@ -123,15 +125,15 @@ static inline void update_mv()
     const float *buffer_raw = ctx->in_raw;
     const int    width = GetScreenWidth();
     const int    height = GetScreenHeight();
-    const float  waf = width * 0.5f;
-    const float  haf = height * 0.5f;
+    const int    waf = width / 2;
+    const int    haf = height / 2;
 
     if (ctx->draw_mode == DRAW_MODE_WAVE) {
-        const float hof = height * 0.25f;
-        const float htf = height * 0.75f;
+        const int hof = height / 4;
+        const int htf = (height / 4) * 3;
 
         DrawTextEx(ctx->font_modern_dos, "L", (Vector2){0.0f, 0.0f}, 32.0f, 2.0f, LIGHTGRAY);
-        DrawTextEx(ctx->font_modern_dos, "R", (Vector2){0.0f, haf + Factor}, 32.0f, 2.0f, LIGHTGRAY);
+        DrawTextEx(ctx->font_modern_dos, "R", (Vector2){0.0f, haf}, 32.0f, 2.0f, LIGHTGRAY);
 
         // Separator line
         DrawLineEx((Vector2){0.0f, haf}, (Vector2){width, haf}, 2, DARKBLUE);
@@ -139,7 +141,18 @@ static inline void update_mv()
         DrawLineEx((Vector2){0.0f, hof}, (Vector2){width, hof}, 1, LIGHTGRAY);
         DrawLineEx((Vector2){0.0f, htf}, (Vector2){width, htf}, 1, LIGHTGRAY);
 
-        for (size_t i = 0; i < BUFFER_SIZE; i += 2) {
+        const int rect_width = (width > (BUFFER_SIZE / 2)) ? DCEIL(width, (BUFFER_SIZE / 2)) : 1;
+        const int buffer_range = (width > (BUFFER_SIZE / 2)) ? BUFFER_SIZE / 2 : width;
+        for (int i = 0; i < buffer_range; ++i) {
+            float rawL = buffer_raw[2 * i] * hof;
+            float rawR = buffer_raw[2 * i + 1] * hof;
+            int   ampL = (int)fabsf(rawL);
+            int   ampR = (int)fabsf(rawR);
+            int   yL = (rawL > 0) ? hof - ampL : hof;
+            int   yR = (rawR > 0) ? htf - ampR : htf;
+
+            DrawRectangle(i * rect_width, yL, rect_width, ampL, RAYWHITE);
+            DrawRectangle(i * rect_width, yR, rect_width, ampR, RAYWHITE);
         }
     }
     if (ctx->draw_mode == DRAW_MODE_SCOPE) {
@@ -250,6 +263,9 @@ static int init()
 
 int main(void)
 {
+    // FLAG_WINDOW_ALWAYS_RUN can't work with FLAG_VSYNC_HINT.
+    // It will stop running when the window doesn't have focus and when it't minimized
+    // Issue: https://github.com/raysan5/raylib/issues/5736
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_ALWAYS_RUN | FLAG_VSYNC_HINT);
     InitWindow(Factor * 160, Factor * 90, "Mallow.C");
     InitAudioDevice();
