@@ -1,5 +1,6 @@
 #include "libs/raylib.h"
 #include <math.h>
+#include <complex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@ const int Factor = 11;
 const int Scope_F = Factor * 26;
 const int Scope_Size = (Factor + (Factor % 3)) / 3;
 
+#define FPS                60
 #define COLOR_BG_DARK      CLITERAL(Color){18, 18, 18, 255}
 #define COLOR_TEXT_PINK    CLITERAL(Color){255, 160, 216, 255}
 #define VOLUME_MAX         1.2f
@@ -52,7 +54,7 @@ typedef struct {
 
 Context *ctx = NULL;
 
-static inline void audio_processor(void *bufferData, unsigned int frames);
+static void audio_processor(void *bufferData, unsigned int frames);
 
 void ctx_music_free()
 {
@@ -109,7 +111,7 @@ int ctx_init()
     return 0;
 }
 
-static inline void audio_processor(void *bufferData, unsigned int frames)
+static void audio_processor(void *bufferData, unsigned int frames)
 {
     size_t append_n = (frames * 2 > BUFFER_SIZE) ? BUFFER_SIZE : frames * 2;
     size_t reserve_n = BUFFER_SIZE - append_n;
@@ -118,15 +120,50 @@ static inline void audio_processor(void *bufferData, unsigned int frames)
     memcpy(ctx->in_raw + reserve_n, (float *)bufferData, append_n * sizeof(float));
 }
 
-static inline void update_mv()
+// https://github.com/tsoding/musializer/blob/master/src/plug.c
+// https://cp-algorithms.com/algebra/fft.html
+static void fft(float in[], float complex out[], size_t n)
+{
+    for (size_t i = 0; i < n; ++i) out[i] = in[i];
+
+    for (size_t i = 1, j = 0; i < n; ++i) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+
+        if (i < j) {
+            float complex temp = out[i];
+            out[i] = out[j];
+            out[j] = temp;
+        }
+    }
+
+    for (size_t len = 2; len <= n; len <<= 1) {
+        float ang = 2 * PI / len;
+        float complex wlen = cosf(ang) + sinf(ang)*I;
+
+        for (size_t i = 0; i < n; i+= len) {
+            float complex w = 1;
+            for (size_t j = 0; j < len / 2; ++j) {
+                float complex u = out[i+j], v = out[i+j+len/2] * w;
+                out[i+j] = u + v;
+                out[i+j+len/2] = u -v;
+                w *= wlen;
+            }
+        }
+    }
+}
+
+static void update_mv()
 {
     if (IsMusicValid(ctx->music)) UpdateMusicStream(ctx->music);
 
-    const float *buffer_raw = ctx->in_raw;
-    const int    width = GetScreenWidth();
-    const int    height = GetScreenHeight();
-    const int    waf = width / 2;
-    const int    haf = height / 2;
+    float buffer_raw[BUFFER_SIZE];
+    memcpy(buffer_raw, ctx->in_raw, BUFFER_SIZE * sizeof(float));
+    const int width = GetScreenWidth();
+    const int height = GetScreenHeight();
+    const int waf = width / 2;
+    const int haf = height / 2;
 
     if (ctx->draw_mode == DRAW_MODE_WAVE) {
         const int hof = height / 4;
@@ -155,6 +192,21 @@ static inline void update_mv()
             DrawRectangle(i * rect_width, yR, rect_width, ampR, RAYWHITE);
         }
     }
+
+    if (ctx->draw_mode == DRAW_MODE_FFT) {
+        // Apply the Hann window on buffer_raw
+        // https://en.wikipedia.org/wiki/Hann_function
+        float in_win[BUFFER_SIZE];
+        for (size_t i = 0; i < BUFFER_SIZE; ++i) {
+            float t = (float)i / (BUFFER_SIZE - 1);
+            float hann = 0.5 - 0.5*cosf(2*PI * t);
+            in_win[i] = buffer_raw[i] * hann;
+        }
+
+        float complex out_raw[BUFFER_SIZE];
+        fft(in_win, out_raw, BUFFER_SIZE);
+    }
+
     if (ctx->draw_mode == DRAW_MODE_SCOPE) {
         Vector2 tsize = MeasureTextEx(ctx->font_modern_dos, "X-L", 32.0f, 2.0f);
         DrawTextEx(ctx->font_modern_dos, "X-L", (Vector2){width - tsize.x, height - tsize.y}, 32.0f, 2.0f, LIGHTGRAY);
@@ -166,7 +218,7 @@ static inline void update_mv()
     }
 }
 
-static inline void update_welcome()
+static void update_welcome()
 {
     const char *text_general = "Drag&Drop to play";
     const char *text_small = "(WAV, OGG, MP3, FLAC, QOA, XM, MOD)\n\n"
@@ -179,7 +231,7 @@ static inline void update_welcome()
     DrawTextEx(ctx->font_modern_dos, text_small, (Vector2){100.0f, ceil(100.0f + general_size.y)}, 48.0f, 2.0f, WHITE);
 }
 
-static inline void update_info()
+static void update_info()
 {
     static char info_str[50];
 
@@ -194,7 +246,7 @@ static inline void update_info()
     }
 }
 
-static inline void adjust_volume(KeyboardKey key)
+static void adjust_volume(KeyboardKey key)
 {
     static float volume_adjust_delay = 0.0f;
     float        adjust_pace = (key == KEY_NINE) ? -VOLUME_ADJUST_PACE : VOLUME_ADJUST_PACE;
@@ -217,7 +269,7 @@ static inline void adjust_volume(KeyboardKey key)
     ctx->info_type = INFO_VOLUME;
 }
 
-static inline void event_handle()
+static void event_handle()
 {
     if (IsFileDropped()) {
         FilePathList droppedFiles = LoadDroppedFiles();
@@ -264,10 +316,11 @@ static int init()
 int main(void)
 {
     // FLAG_WINDOW_ALWAYS_RUN can't work with FLAG_VSYNC_HINT.
-    // It will stop running when the window doesn't have focus and when it't minimized
+    // It will stop running when the window doesn't have focus and when it's minimized
     // Issue: https://github.com/raysan5/raylib/issues/5736
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_ALWAYS_RUN | FLAG_VSYNC_HINT);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_ALWAYS_RUN);
     InitWindow(Factor * 160, Factor * 90, "Mallow.C");
+    SetTargetFPS(FPS);
     InitAudioDevice();
 
     if (init() < 0) return 1;
