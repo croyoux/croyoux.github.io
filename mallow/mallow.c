@@ -1,6 +1,6 @@
-#include "libs/raylib.h"
-#include <math.h>
+#include "raylib.h"
 #include <complex.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -120,7 +120,7 @@ static void audio_processor(void *bufferData, unsigned int frames)
     memcpy(ctx->in_raw + reserve_n, (float *)bufferData, append_n * sizeof(float));
 }
 
-// https://github.com/tsoding/musializer/blob/master/src/plug.c
+// Modified from https://github.com/tsoding/musializer/blob/master/src/plug.c
 // https://cp-algorithms.com/algebra/fft.html
 static void fft(float in[], float complex out[], size_t n)
 {
@@ -139,15 +139,15 @@ static void fft(float in[], float complex out[], size_t n)
     }
 
     for (size_t len = 2; len <= n; len <<= 1) {
-        float ang = 2 * PI / len;
-        float complex wlen = cosf(ang) + sinf(ang)*I;
+        float         ang = 2 * PI / len;
+        float complex wlen = cosf(ang) + sinf(ang) * I;
 
-        for (size_t i = 0; i < n; i+= len) {
+        for (size_t i = 0; i < n; i += len) {
             float complex w = 1;
             for (size_t j = 0; j < len / 2; ++j) {
-                float complex u = out[i+j], v = out[i+j+len/2] * w;
-                out[i+j] = u + v;
-                out[i+j+len/2] = u -v;
+                float complex u = out[i + j], v = out[i + j + len / 2] * w;
+                out[i + j] = u + v;
+                out[i + j + len / 2] = u - v;
                 w *= wlen;
             }
         }
@@ -193,18 +193,42 @@ static void update_mv()
         }
     }
 
+    // Ref: https://github.com/tsoding/musializer/blob/master/src/plug.c - fft_analyze
     if (ctx->draw_mode == DRAW_MODE_FFT) {
         // Apply the Hann window on buffer_raw
         // https://en.wikipedia.org/wiki/Hann_function
         float in_win[BUFFER_SIZE];
         for (size_t i = 0; i < BUFFER_SIZE; ++i) {
             float t = (float)i / (BUFFER_SIZE - 1);
-            float hann = 0.5 - 0.5*cosf(2*PI * t);
+            float hann = 0.5 - 0.5 * cosf(2 * PI * t);
             in_win[i] = buffer_raw[i] * hann;
         }
 
         float complex out_raw[BUFFER_SIZE];
         fft(in_win, out_raw, BUFFER_SIZE);
+
+        // "Squash" into the Logarithmic Scale
+        float  out_log[BUFFER_SIZE];
+        float  step = 1.06;
+        float  lowf = 1.0f;
+        size_t m = 0;
+        float  max_amp = 1.0f;
+        for (float f = lowf; (size_t)f < BUFFER_SIZE / 2; f = ceilf(f * step)) {
+            float f1 = ceilf(f * step);
+            float a = 0.0f;
+
+            for (size_t q = (size_t)f; q < BUFFER_SIZE / 2 && q < (size_t)f1; ++q) {
+                float b = cabsf(out_raw[q]);
+                if (b > a) a = b;
+            }
+            if (max_amp < a) max_amp = a;
+            out_log[m++] = a;
+        }
+
+        // Normalize Frequencies to 0..1 range
+        for (size_t i = 0; i < m; ++i) {
+            out_log[i] /= max_amp;
+        }
     }
 
     if (ctx->draw_mode == DRAW_MODE_SCOPE) {
@@ -306,7 +330,7 @@ static int init()
     if (ctx_init() < 0) return -1;
 
     // https://www.dafont.com/modern-dos.font
-    const char *modern_dos_path = "./resources/ModernDOS9x16.ttf";
+    const char *modern_dos_path = "../resources/ModernDOS9x16.ttf";
     ctx->font_modern_dos = LoadFontEx(modern_dos_path, 16, NULL, 0);
     SetTextureFilter(ctx->font_modern_dos.texture, TEXTURE_FILTER_POINT);
 
